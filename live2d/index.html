@@ -37,29 +37,17 @@
   @media (max-width:640px){.panel{bottom:14px}.bubble{top:4%;font-size:14px}}
 </style>
 <script src="pixi.min.js"></script>
-<script src="live2d.min.js"></script>
-<script src="cubism2.min.js"></script>
+<script src="live2dcubismcore.min.js"></script>
+<script src="pixi-live2d.min.js"></script>
+<script src="cubism4.min.js"></script>
 </head>
 <body>
 <div id="canvas-wrap"></div>
 
-<div class="bubble" id="bubble">大肥鱼来啦～点击可以摸摸头哦 🐳</div>
+<div class="bubble" id="bubble">大肥鱼来啦～</div>
 
 <div class="panel">
-  <div class="row" id="expr-row">
-    <button data-expr="f01">微笑</button>
-    <button data-expr="f02">害羞</button>
-    <button data-expr="f03">开心</button>
-    <button data-expr="f04">惊讶</button>
-    <button data-reset="1" class="gold">恢复</button>
-  </div>
-  <div class="row" id="motion-row">
-    <button data-motion="tap_body">点头</button>
-    <button data-motion="flick_head">甩甩头</button>
-    <button data-motion="shake">摇头</button>
-    <button data-motion="pinch_in">凑近</button>
-    <button data-motion="idle">待机</button>
-  </div>
+  <div class="row" id="expr-row"></div>
   <div class="say">
     <input id="say-input" placeholder="想听大肥鱼说点什么？输入后回车" maxlength="60">
     <button class="gold" id="say-btn">说</button>
@@ -81,13 +69,17 @@
 
   let model;
   try {
-    model = await PIXI.live2d.Live2DModel.from('shizuku/shizuku.model.json');
+    model = await PIXI.live2d.Live2DModel.from('fatfish/大肥鱼.model3.json');
   } catch (e) {
     document.getElementById('bubble').textContent = '模型没加载出来：' + e.message;
     document.getElementById('bubble').classList.add('show');
     return;
   }
   app.stage.addChild(model);
+  // 模型自带的水印被作者做成了「水印消除」表情，加载后默认套上
+  try { model.expression('13 水印消除'); } catch (e) {}
+  try { model.internalModel.coreModel.setParameterValueById('Paramcol_3', 1); } catch (e) {}
+  window.__m = model;
 
   function fit() {
     const w = app.renderer.width / app.renderer.resolution;
@@ -123,13 +115,13 @@
     function step(t) {
       const p = (t - t0) / duration;
       if (p >= 1) {
-        core.setParameterValueById('PARAM_MOUTH_OPEN_Y', 0);
+        core.setParameterValueById('ParamMouthOpenY', 0);
         lipRaf = null;
         return;
       }
       const v = Math.abs(Math.sin(p * Math.PI * 7)) * (0.45 + 0.45 * Math.sin(p * Math.PI));
       try {
-        core.setParameterValueById('PARAM_MOUTH_OPEN_Y', v);
+        core.setParameterValueById('ParamMouthOpenY', v);
       } catch (e) {}
       lipRaf = requestAnimationFrame(step);
     }
@@ -143,22 +135,26 @@
     try { model.motion(group); } catch (e) {}
   }
 
-  document.querySelectorAll('[data-expr]').forEach((b) => {
+  // 表情按钮从模型里读出来
+  const defs = (model.internalModel.settings && model.internalModel.settings.expressions) || [];
+  const row = document.getElementById('expr-row');
+  const pretty = (n) => n.replace(/^\d+\s*/, '').trim() || n;
+  const skip = ['水印消除', '尾巴消失', '耳朵消失', '口型切换'];
+  defs.forEach((d) => {
+    if (skip.some((k) => d.Name.includes(k))) return;
+    const b = document.createElement('button');
+    b.textContent = pretty(d.Name);
     b.addEventListener('click', () => {
-      expr(b.dataset.expr);
-      say('这个表情是「' + b.textContent + '」哦～');
+      model.expression(d.Name);
+      say('这个表情是「' + pretty(d.Name) + '」～');
     });
+    row.appendChild(b);
   });
-  document.querySelector('[data-reset]').addEventListener('click', () => {
-    try { model.expression(); } catch (e) {}
-    say('回到平常的样子啦～');
-  });
-  document.querySelectorAll('[data-motion]').forEach((b) => {
-    b.addEventListener('click', () => {
-      motion(b.dataset.motion);
-      say('嗯？' + b.textContent + '～');
-    });
-  });
+  const reset = document.createElement('button');
+  reset.textContent = '恢复';
+  reset.className = 'gold';
+  reset.addEventListener('click', () => { model.expression(); say('回到平常的样子啦～'); });
+  row.appendChild(reset);
 
   const input = document.getElementById('say-input');
   const doSay = () => {
@@ -172,13 +168,13 @@
 
   // 点模型 = 摸摸
   model.on('pointertap', () => {
-    motion('tap_body');
+    try { model.expression('04 脸红'); } catch (e) {}
     const lines = ['嘿嘿，被摸头啦～', '大肥鱼在这里哦', '主人今天也要开心呀', '尾巴会自己晃起来的呢'];
     say(lines[Math.floor(Math.random() * lines.length)]);
   });
 
   // 首次招呼
-  setTimeout(() => say('大肥鱼来啦～点击可以摸摸头，也可以让大肥鱼说话哦 🐳', 5200), 600);
+  setTimeout(() => say('大肥鱼来啦～点下面的按钮换表情，也可以让大肥鱼说话哦 🐳', 5200), 600);
 })();
 </script>
 </body>
