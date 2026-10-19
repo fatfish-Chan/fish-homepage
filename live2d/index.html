@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>大肥鱼 · Live2D</title>
+<style>
+  :root{--night:#070f1d;--sea:#0e2744;--gold:#e5bd78;--foam:#c8ecff}
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{min-height:100vh;overflow:hidden;color:#eaf6ff;
+    font-family:"PingFang SC","Microsoft YaHei",system-ui,sans-serif;
+    background:radial-gradient(1100px 700px at 70% 10%,rgba(43,92,155,.55),transparent 60%),
+               linear-gradient(180deg,#070f1d,#0e2744 55%,#123a5e);}
+  #canvas-wrap{position:fixed;inset:0;display:grid;place-items:center;z-index:1}
+  canvas{display:block;max-width:100vw;max-height:100vh}
+  .bubble{position:fixed;left:50%;top:8%;transform:translateX(-50%);z-index:3;
+    max-width:min(560px,86vw);padding:14px 20px;border-radius:18px;
+    background:rgba(253,246,232,.95);color:#12253c;font-size:15px;line-height:1.8;
+    box-shadow:0 16px 40px rgba(0,0,0,.35);opacity:0;transition:opacity .25s,transform .25s;
+    pointer-events:none}
+  .bubble.show{opacity:1;transform:translateX(-50%) translateY(6px)}
+  .bubble::after{content:"";position:absolute;left:50%;bottom:-9px;width:18px;height:18px;
+    background:rgba(253,246,232,.95);transform:translateX(-50%) rotate(45deg);border-radius:3px}
+  .panel{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);z-index:4;
+    display:flex;flex-direction:column;gap:10px;align-items:center;width:min(720px,92vw)}
+  .row{display:flex;gap:8px;flex-wrap:wrap;justify-content:center}
+  button{cursor:pointer;border:1px solid rgba(200,236,255,.28);background:rgba(200,236,255,.1);
+    color:#eaf6ff;font:inherit;font-size:13.5px;padding:9px 16px;border-radius:12px;
+    transition:.22s;backdrop-filter:blur(8px)}
+  button:hover{background:rgba(200,236,255,.2);border-color:rgba(200,236,255,.55);transform:translateY(-2px)}
+  button.gold{background:linear-gradient(135deg,#f6dcaa,#e5bd78);color:#1a2f47;border-color:transparent;font-weight:600}
+  .say{display:flex;gap:8px;width:100%}
+  .say input{flex:1;border:1px solid rgba(200,236,255,.28);background:rgba(10,20,35,.6);
+    color:#eaf6ff;font:inherit;font-size:14px;padding:11px 16px;border-radius:12px;outline:none}
+  .say input:focus{border-color:rgba(200,236,255,.6)}
+  .hint{position:fixed;right:16px;bottom:12px;font-size:11.5px;color:#6f9cba;z-index:4}
+  @media (max-width:640px){.panel{bottom:14px}.bubble{top:4%;font-size:14px}}
+</style>
+<script src="pixi.min.js"></script>
+<script src="live2d.min.js"></script>
+<script src="cubism2.min.js"></script>
+</head>
+<body>
+<div id="canvas-wrap"></div>
+
+<div class="bubble" id="bubble">大肥鱼来啦～点击可以摸摸头哦 🐳</div>
+
+<div class="panel">
+  <div class="row" id="expr-row">
+    <button data-expr="f01">微笑</button>
+    <button data-expr="f02">害羞</button>
+    <button data-expr="f03">开心</button>
+    <button data-expr="f04">惊讶</button>
+    <button data-reset="1" class="gold">恢复</button>
+  </div>
+  <div class="row" id="motion-row">
+    <button data-motion="tap_body">点头</button>
+    <button data-motion="flick_head">甩甩头</button>
+    <button data-motion="shake">摇头</button>
+    <button data-motion="pinch_in">凑近</button>
+    <button data-motion="idle">待机</button>
+  </div>
+  <div class="say">
+    <input id="say-input" placeholder="想听大肥鱼说点什么？输入后回车" maxlength="60">
+    <button class="gold" id="say-btn">说</button>
+  </div>
+</div>
+<div class="hint">点击模型也能触发动作</div>
+
+<script>
+(async () => {
+  const app = new PIXI.Application({
+    width: window.innerWidth,
+    height: window.innerHeight,
+    backgroundAlpha: 0,
+    antialias: true,
+    resolution: Math.min(window.devicePixelRatio || 1, 2),
+    autoDensity: true,
+  });
+  document.getElementById('canvas-wrap').appendChild(app.view);
+
+  let model;
+  try {
+    model = await PIXI.live2d.Live2DModel.from('shizuku/shizuku.model.json');
+  } catch (e) {
+    document.getElementById('bubble').textContent = '模型没加载出来：' + e.message;
+    document.getElementById('bubble').classList.add('show');
+    return;
+  }
+  app.stage.addChild(model);
+
+  function fit() {
+    const w = app.renderer.width / app.renderer.resolution;
+    const h = app.renderer.height / app.renderer.resolution;
+    const scale = Math.min(w / model.width * 0.52, h / model.height * 0.80);
+    model.scale.set(scale);
+    model.x = w / 2;
+    model.y = h * 1.02;
+    model.anchor.set(0.5, 1);
+  }
+  fit();
+  window.addEventListener('resize', () => {
+    app.renderer.resize(window.innerWidth, window.innerHeight);
+    fit();
+  });
+
+  // 说话气泡 + 口型
+  const bubble = document.getElementById('bubble');
+  let bubbleTimer = null;
+  function say(text, ms = 4200) {
+    bubble.textContent = text;
+    bubble.classList.add('show');
+    clearTimeout(bubbleTimer);
+    bubbleTimer = setTimeout(() => bubble.classList.remove('show'), ms);
+    lipSync(text.length);
+  }
+  let lipRaf = null;
+  function lipSync(chars) {
+    if (lipRaf) cancelAnimationFrame(lipRaf);
+    const core = model.internalModel.coreModel;
+    const duration = Math.min(3200, 220 + chars * 95);
+    const t0 = performance.now();
+    function step(t) {
+      const p = (t - t0) / duration;
+      if (p >= 1) {
+        core.setParameterValueById('PARAM_MOUTH_OPEN_Y', 0);
+        lipRaf = null;
+        return;
+      }
+      const v = Math.abs(Math.sin(p * Math.PI * 7)) * (0.45 + 0.45 * Math.sin(p * Math.PI));
+      try {
+        core.setParameterValueById('PARAM_MOUTH_OPEN_Y', v);
+      } catch (e) {}
+      lipRaf = requestAnimationFrame(step);
+    }
+    lipRaf = requestAnimationFrame(step);
+  }
+
+  function expr(name) {
+    try { model.expression(name); } catch (e) {}
+  }
+  function motion(group) {
+    try { model.motion(group); } catch (e) {}
+  }
+
+  document.querySelectorAll('[data-expr]').forEach((b) => {
+    b.addEventListener('click', () => {
+      expr(b.dataset.expr);
+      say('这个表情是「' + b.textContent + '」哦～');
+    });
+  });
+  document.querySelector('[data-reset]').addEventListener('click', () => {
+    try { model.expression(); } catch (e) {}
+    say('回到平常的样子啦～');
+  });
+  document.querySelectorAll('[data-motion]').forEach((b) => {
+    b.addEventListener('click', () => {
+      motion(b.dataset.motion);
+      say('嗯？' + b.textContent + '～');
+    });
+  });
+
+  const input = document.getElementById('say-input');
+  const doSay = () => {
+    const txt = input.value.trim();
+    if (!txt) return;
+    say(txt, 5200);
+    input.value = '';
+  };
+  document.getElementById('say-btn').addEventListener('click', doSay);
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') doSay(); });
+
+  // 点模型 = 摸摸
+  model.on('pointertap', () => {
+    motion('tap_body');
+    const lines = ['嘿嘿，被摸头啦～', '大肥鱼在这里哦', '主人今天也要开心呀', '尾巴会自己晃起来的呢'];
+    say(lines[Math.floor(Math.random() * lines.length)]);
+  });
+
+  // 首次招呼
+  setTimeout(() => say('大肥鱼来啦～点击可以摸摸头，也可以让大肥鱼说话哦 🐳', 5200), 600);
+})();
+</script>
+</body>
+</html>
