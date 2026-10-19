@@ -51,6 +51,24 @@ curl -X PUT \
   -d '{"environment":"production","hostname":"fish.sazuyo.moe","service":"fish-homepage","zone_id":"<ZONE_ID>"}'
 ```
 
+## 留言板（漂流瓶）
+
+页面底部有一个留言板，展示**最新 5 条**留言，数据存在 Cloudflare KV（`fish-guestbook`，namespace id `fa9feb40998340b19eb7f0eb1580de1c`，绑定名 `GUESTBOOK`）。
+
+- `GET /api/messages` → `{ messages: [{name, text, ts}] }`（最新 5 条）
+- `POST /api/messages` → `{ name?, text }`，同 IP 45 秒冷却
+- 昵称上限 16 字、内容上限 200 字；KV 里保留最近 50 条
+- 前端每次请求带 `?t=<timestamp>` 绕过边缘缓存；留言成功后立即用响应里的列表刷新
+
+部署时必须带 KV 绑定，否则接口会返回空列表：
+
+```bash
+curl -X PUT "https://api.cloudflare.com/client/v4/accounts/<ACCOUNT_ID>/workers/scripts/fish-homepage" \
+  -H "Authorization: Bearer $CF_API_TOKEN" \
+  -F 'metadata={"main_module":"worker.js","bindings":[{"type":"kv_namespace","name":"GUESTBOOK","namespace_id":"fa9feb40998340b19eb7f0eb1580de1c"}]};type=application/json' \
+  -F 'worker.js=@worker.js;type=application/javascript+module;filename=worker.js'
+```
+
 ## 本地预览
 
 ```bash
