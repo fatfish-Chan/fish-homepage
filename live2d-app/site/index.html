@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<script>window.__errs=[];window.addEventListener("error",e=>{window.__errs.push((e.message||"")+" @"+(e.filename||"").split("/").pop()+":"+e.lineno)},true);</script>
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>大肥鱼 · 聊天</title>
+<style>
+  :root{
+    --night:#070f1d; --sea:#0e2744; --gold:#e5bd78; --foam:#c8ecff;
+    --bubble-ai:#fdf6e8; --bubble-me:#2a5f92;
+  }
+  *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+  html,body{height:100%;overflow:hidden}
+  body{
+    font-family:"PingFang SC","Microsoft YaHei",system-ui,sans-serif;color:#eaf6ff;
+    background:
+      radial-gradient(900px 600px at 22% 12%,rgba(43,92,155,.5),transparent 60%),
+      radial-gradient(700px 520px at 80% 80%,rgba(29,67,116,.45),transparent 55%),
+      linear-gradient(160deg,#070f1d,#0e2744 58%,#123a5e);
+    display:flex;
+  }
+  /* ── 舞台（Live2D） ── */
+  .stage{position:relative;flex:0 0 42%;min-width:0;display:flex;align-items:center;justify-content:center;overflow:hidden}
+  .stage canvas{display:block;max-width:100%;max-height:100%}
+  .stage-glow{position:absolute;inset:0;pointer-events:none;
+    background:radial-gradient(420px 320px at 50% 62%,rgba(120,200,255,.16),transparent 70%)}
+  /* ── 聊天区 ── */
+  .chat{flex:1;min-width:0;display:flex;flex-direction:column;
+    background:linear-gradient(180deg,rgba(7,15,29,.34),rgba(7,15,29,.62));
+    border-left:1px solid rgba(200,236,255,.12);backdrop-filter:blur(6px)}
+  .chat-head{display:flex;align-items:center;gap:10px;padding:14px 18px 10px;
+    border-bottom:1px solid rgba(200,236,255,.1)}
+  .dot{width:9px;height:9px;border-radius:50%;background:#7ee2a8;box-shadow:0 0 10px #7ee2a8}
+  .chat-head b{font-size:15px;font-weight:600;letter-spacing:.02em}
+  .chat-head span{font-size:11.5px;color:#7fa8c6;margin-left:auto}
+  .msgs{flex:1;overflow-y:auto;padding:16px 18px;display:flex;flex-direction:column;gap:12px;scroll-behavior:smooth}
+  .msgs::-webkit-scrollbar{width:6px}
+  .msgs::-webkit-scrollbar-thumb{background:rgba(200,236,255,.2);border-radius:3px}
+  .msg{max-width:82%;padding:11px 15px;border-radius:16px;font-size:14.5px;line-height:1.75;
+    white-space:pre-wrap;word-break:break-word;animation:pop .26s ease}
+  @keyframes pop{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+  .msg.ai{align-self:flex-start;background:var(--bubble-ai);color:#12253c;border-bottom-left-radius:5px}
+  .msg.me{align-self:flex-end;background:var(--bubble-me);color:#f2fbff;border-bottom-right-radius:5px}
+  .msg.typing{color:#7d8fa5;background:rgba(253,246,232,.6)}
+  .input-bar{display:flex;gap:9px;padding:12px 14px calc(12px + env(safe-area-inset-bottom));
+    border-top:1px solid rgba(200,236,255,.1);background:rgba(6,13,24,.5)}
+  .input-bar input{flex:1;min-width:0;border:1px solid rgba(200,236,255,.24);background:rgba(12,24,40,.7);
+    color:#eaf6ff;font:inherit;font-size:15px;padding:11px 15px;border-radius:13px;outline:none}
+  .input-bar input:focus{border-color:rgba(200,236,255,.6)}
+  .input-bar button{border:0;cursor:pointer;font:inherit;font-size:14.5px;font-weight:600;
+    padding:11px 20px;border-radius:13px;background:linear-gradient(135deg,#f6dcaa,#e5bd78);color:#1a2f47;
+    transition:transform .15s,filter .15s}
+  .input-bar button:active{transform:scale(.96)}
+  .input-bar button:disabled{filter:grayscale(.5) brightness(.8);cursor:default}
+  .icon-btn{border:1px solid rgba(200,236,255,.24)!important;background:rgba(200,236,255,.1)!important;
+    color:#eaf6ff!important;font-weight:400!important;padding:11px 14px!important}
+  /* ── 竖屏 ── */
+  @media (max-aspect-ratio: 1/1){
+    body{flex-direction:column}
+    .stage{flex:0 0 48%;border-bottom:1px solid rgba(200,236,255,.1)}
+    .chat{border-left:0;flex:1}
+    .msgs{padding:12px 14px}
+    .msg{font-size:14px;max-width:88%}
+    .chat-head{padding:10px 14px 8px}
+  }
+  @media (max-width:420px){
+    .stage{flex-basis:44%}
+  }
+  .hint{position:fixed;left:50%;top:10px;transform:translateX(-50%);font-size:12px;color:#8fb6d1;
+    background:rgba(6,13,24,.6);padding:6px 14px;border-radius:20px;border:1px solid rgba(200,236,255,.15);
+    opacity:0;transition:opacity .3s;pointer-events:none;z-index:9}
+  .hint.show{opacity:1}
+</style>
+<script src="live2d/pixi.min.js"></script>
+<script src="live2d/live2d.min.js"></script>
+<script src="live2d/live2dcubismcore.min.js"></script>
+<script src="live2d/cubism4.min.js"></script>
+<script src="live2d/pixi-live2d.min.js"></script>
+</head>
+<body>
+<div class="stage" id="stage"></div>
+<div class="stage-glow"></div>
+
+<div class="chat">
+  <div class="chat-head">
+    <span class="dot"></span><b>大肥鱼</b><span id="status">在线</span>
+  </div>
+  <div class="msgs" id="msgs">
+    <div class="msg ai">主人好呀～大肥鱼游过来啦。今天想聊点什么？</div>
+  </div>
+  <div class="input-bar">
+    <button class="icon-btn" id="mute" title="语音开关">🔊</button>
+    <input id="text" placeholder="和大肥鱼说点什么…" autocomplete="off" maxlength="300">
+    <button id="send">发送</button>
+  </div>
+</div>
+<div class="hint" id="hint"></div>
+
+<script>
+(() => {
+  // ═══ Live2D ═══
+  const stage = document.getElementById('stage');
+  const app = new PIXI.Application({
+    backgroundAlpha: 0, antialias: true,
+    resolution: Math.min(window.devicePixelRatio || 1, 2), autoDensity: true,
+  });
+  app.view.style.width = '100%';
+  app.view.style.height = '100%';
+  stage.appendChild(app.view);
+
+  let model = null, lipRaf = null;
+  const hint = document.getElementById('hint');
+  function toast(t) {
+    hint.textContent = t;
+    hint.classList.add('show');
+    setTimeout(() => hint.classList.remove('show'), 2200);
+  }
+
+  PIXI.live2d.Live2DModel.from('live2d/fatfish/大肥鱼.model3.json').then((m) => {
+    model = m;
+    window.__m = m;
+    app.stage.addChild(m);
+    try { m.expression('13 水印消除'); } catch (e) {}
+    try { m.internalModel.coreModel.setParameterValueById('Paramcol_3', 1); } catch (e) {}
+    fit();
+  }).catch((e) => {
+    console.error(e);
+    toast('模型没加载出来：' + (e && e.message ? e.message : e));
+  });
+
+  function fit() {
+    const w = stage.clientWidth, h = stage.clientHeight;
+    if (!w || !h) return;
+    app.renderer.resize(w, h);
+    if (!model) return;
+    // 模型原始尺寸（未缩放）用来算适配比例
+    const bw = model.internalModel.width || model.width || 1000;
+    const bh = model.internalModel.height || model.height || 1000;
+    let s = Math.min(w / bw * 0.95, h / bh * 0.98);
+    if (!isFinite(s) || s <= 0) s = 0.4;
+    model.scale.set(s);
+    model.anchor.set(0.5, 1);
+    model.x = w / 2;
+    model.y = h * 0.99;
+  }
+  window.addEventListener('resize', () => requestAnimationFrame(fit));
+  if (window.ResizeObserver) new ResizeObserver(() => fit()).observe(stage);
+
+  // 眨眼/呼吸由模型自带；说话时驱动嘴
+  function lipSync(ms) {
+    if (!model) return;
+    if (lipRaf) cancelAnimationFrame(lipRaf);
+    const core = model.internalModel.coreModel;
+    const t0 = performance.now();
+    (function step(t) {
+      const p = (t - t0) / ms;
+      if (p >= 1) {
+        try { core.setParameterValueById('ParamMouthOpenY', 0); } catch (e) {}
+        lipRaf = null; return;
+      }
+      const v = Math.abs(Math.sin(p * Math.PI * 8)) * (0.3 + 0.55 * Math.sin(p * Math.PI));
+      try { core.setParameterValueById('ParamMouthOpenY', v); } catch (e) {}
+      lipRaf = requestAnimationFrame(step);
+    })(t0);
+  }
+
+  function express(name) {
+    if (!model) return;
+    try { model.expression(name); } catch (e) {}
+  }
+
+  // ═══ 语音 ═══
+  let ttsOn = true, voice = null;
+  function pickVoice() {
+    if (!('speechSynthesis' in window)) return;
+    const vs = speechSynthesis.getVoices();
+    voice = vs.find((v) => /zh[-_]CN/i.test(v.lang)) || vs.find((v) => /^zh/i.test(v.lang)) || null;
+  }
+  pickVoice();
+  if ('speechSynthesis' in window) speechSynthesis.onvoiceschanged = pickVoice;
+
+  function speak(text) {
+    if (!ttsOn || !('speechSynthesis' in window)) { lipSync(Math.min(2200, text.length * 90)); return; }
+    try {
+      speechSynthesis.cancel();
+      const u = new SpeechSynthesisUtterance(text);
+      u.lang = 'zh-CN'; u.rate = 0.98; u.pitch = 1.25;
+      if (voice) u.voice = voice;
+      u.onstart = () => lipSync(Math.max(800, Math.min(12000, text.length * 190)));
+      u.onend = () => lipSync(120);
+      speechSynthesis.speak(u);
+    } catch (e) { lipSync(Math.min(2200, text.length * 90)); }
+  }
+
+  document.getElementById('mute').addEventListener('click', (e) => {
+    ttsOn = !ttsOn;
+    e.currentTarget.textContent = ttsOn ? '🔊' : '🔇';
+    if (!ttsOn && 'speechSynthesis' in window) speechSynthesis.cancel();
+  });
+
+  // ═══ 聊天 ═══
+  const msgs = document.getElementById('msgs');
+  const input = document.getElementById('text');
+  const sendBtn = document.getElementById('send');
+  const statusEl = document.getElementById('status');
+  const history = [];
+
+  function addMsg(role, text) {
+    const d = document.createElement('div');
+    d.className = 'msg ' + (role === 'user' ? 'me' : 'ai');
+    d.textContent = text;
+    msgs.appendChild(d);
+    msgs.scrollTop = msgs.scrollHeight;
+    return d;
+  }
+
+  // 根据回复做点小表情
+  function react(text) {
+    if (/[哈嘿呵]|开心|高兴|笑/.test(text)) express('02 龇牙');
+    else if (/害羞|脸红|不好意/.test(text)) express('04 脸红');
+    else if (/生气|哼|讨厌/.test(text)) express('03 脸黑');
+    else if (/呜呜|难过|哭|舍不得/.test(text)) express('08 担心嘴');
+    else express('05 》》'.replace('》》', '》《'));
+    setTimeout(() => { try { model && model.expression(); } catch (e) {} }, 4200);
+  }
+
+  async function send() {
+    const text = input.value.trim();
+    if (!text) return;
+    input.value = '';
+    addMsg('user', text);
+    history.push({ role: 'user', content: text });
+
+    sendBtn.disabled = true;
+    statusEl.textContent = '正在想…';
+    const typing = addMsg('ai', '· · ·');
+    typing.classList.add('typing');
+
+    try {
+      const r = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ text, history: history.slice(-12) }),
+      });
+      const data = await r.json();
+      typing.remove();
+      if (data.reply) {
+        addMsg('ai', data.reply);
+        history.push({ role: 'assistant', content: data.reply });
+        react(data.reply);
+        speak(data.reply);
+      } else {
+        addMsg('ai', '呜…大肥鱼刚才走神了，再说一次好不好？');
+        toast('后端：' + (data.error || '空回复'));
+      }
+    } catch (e) {
+      typing.remove();
+      addMsg('ai', '呜…连接不到大肥鱼的小脑袋，检查一下后端在不在？');
+      toast(String(e).slice(0, 80));
+    } finally {
+      sendBtn.disabled = false;
+      statusEl.textContent = '在线';
+      input.focus();
+    }
+  }
+
+  sendBtn.addEventListener('click', send);
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.isComposing) send(); });
+  window.addEventListener('load', () => setTimeout(fit, 120));
+})();
+</script>
+</body>
+</html>
