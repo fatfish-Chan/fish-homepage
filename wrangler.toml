@@ -1,0 +1,8 @@
+name = "fish-homepage"
+main = "worker.js"
+compatibility_date = "2026-10-19"
+workers_dev = true
+
+# 自定义域名由 Cloudflare API 绑定（fish.sazuyo.moe），Wrangler 会读取 zone。
+# 如需在 Wrangler 里管理，可解开下面两行并补上 zone_id：
+# routes = [{ pattern = "fish.sazuyo.moe/*", zone_id = "<ZONE_ID>" }]
