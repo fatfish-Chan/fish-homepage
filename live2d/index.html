@@ -51,6 +51,7 @@
   <div class="say">
     <input id="say-input" placeholder="想听大肥鱼说点什么？输入后回车" maxlength="60">
     <button class="gold" id="say-btn">说</button>
+    <button id="mute-btn" title="开关语音">🔊</button>
   </div>
 </div>
 <div class="hint">点击模型也能触发动作</div>
@@ -99,18 +100,46 @@
   // 说话气泡 + 口型
   const bubble = document.getElementById('bubble');
   let bubbleTimer = null;
+  // ---- 语音：先用浏览器自带中文女声，Fish Audio 专属音色等 key 权限修好后走 Worker 代理 ----
+  let ttsOn = true, voice = null;
+  function pickVoice() {
+    if (!('speechSynthesis' in window)) return;
+    const vs = speechSynthesis.getVoices();
+    voice = vs.find((v) => /zh[-_]CN/i.test(v.lang)) || vs.find((v) => /^zh/i.test(v.lang)) || null;
+  }
+  pickVoice();
+  if ('speechSynthesis' in window) speechSynthesis.onvoiceschanged = pickVoice;
+
+  function speak(text) {
+    if (!ttsOn || !('speechSynthesis' in window)) return;
+    try {
+      speechSynthesis.cancel();
+      const u = new SpeechSynthesisUtterance(text);
+      u.lang = 'zh-CN';
+      u.rate = 0.96;
+      u.pitch = 1.25;
+      if (voice) u.voice = voice;
+      u.onstart = () => {
+        const est = Math.min(9000, Math.max(900, text.length * 190));
+        lipSync(text.length, est);
+      };
+      speechSynthesis.speak(u);
+    } catch (e) {}
+  }
+
   function say(text, ms = 4200) {
     bubble.textContent = text;
     bubble.classList.add('show');
     clearTimeout(bubbleTimer);
     bubbleTimer = setTimeout(() => bubble.classList.remove('show'), ms);
-    lipSync(text.length);
+    if (!lipRaf) lipSync(text.length);
+    speak(text);
   }
   let lipRaf = null;
-  function lipSync(chars) {
+  function lipSync(chars, durMs) {
     if (lipRaf) cancelAnimationFrame(lipRaf);
     const core = model.internalModel.coreModel;
-    const duration = Math.min(3200, 220 + chars * 95);
+    const duration = durMs || Math.min(3200, 220 + chars * 95);
     const t0 = performance.now();
     function step(t) {
       const p = (t - t0) / duration;
@@ -164,6 +193,12 @@
     input.value = '';
   };
   document.getElementById('say-btn').addEventListener('click', doSay);
+  const muteBtn = document.getElementById('mute-btn');
+  muteBtn.addEventListener('click', () => {
+    ttsOn = !ttsOn;
+    muteBtn.textContent = ttsOn ? '🔊' : '🔇';
+    if (!ttsOn && 'speechSynthesis' in window) speechSynthesis.cancel();
+  });
   input.addEventListener('keydown', (e) => { if (e.key === 'Enter') doSay(); });
 
   // 点模型 = 摸摸
