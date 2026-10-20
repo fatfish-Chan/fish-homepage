@@ -84,7 +84,11 @@
   .preview .thumb img{width:100%;height:100%;object-fit:cover;display:block}
   .preview .thumb span{position:absolute;right:2px;top:2px;width:18px;height:18px;line-height:16px;text-align:center;
     border-radius:50%;background:rgba(0,0,0,.55);color:#fff;font-size:12px;cursor:pointer}
+  .msg img.att.emoji{max-width:150px;max-height:150px;border-radius:12px;margin-top:8px}
   .msg img.att{margin-top:6px;max-width:100%;border-radius:10px;display:block}
+  .newbtn{border:1px solid rgba(200,236,255,.35);background:rgba(200,236,255,.12);color:#dff3ff;
+    font-size:12px;padding:4px 10px;border-radius:999px;cursor:pointer;margin-left:8px;font-family:inherit}
+  .newbtn:hover{background:rgba(200,236,255,.24)}
   .hint{position:fixed;left:50%;top:10px;transform:translateX(-50%);font-size:12px;color:#8fb6d1;
     background:rgba(6,13,24,.6);padding:6px 14px;border-radius:20px;border:1px solid rgba(200,236,255,.15);
     opacity:0;transition:opacity .3s;pointer-events:none;z-index:9}
@@ -103,6 +107,7 @@
 <div class="chat">
   <div class="chat-head">
     <span class="dot"></span><b>大肥鱼</b><span id="status">在线</span>
+    <button class="newbtn" id="newchat" title="开始新对话">＋</button>
   </div>
   <div class="msgs" id="msgs">
     <div class="msg ai">主人好呀～大肥鱼游过来啦。今天想聊点什么？</div>
@@ -227,7 +232,7 @@
   const sendBtn = document.getElementById('send');
   const statusEl = document.getElementById('status');
   const history = [];
-  let sessionId = localStorage.getItem('fish_sid') || '';
+  let sessionId = '';
   const pending = [];   // 待发送的图片 dataURL
 
   const previewEl = document.getElementById('preview');
@@ -294,8 +299,21 @@
   function addMsg(role, text, images) {
     const d = document.createElement('div');
     d.className = 'msg ' + (role === 'user' ? 'me' : 'ai');
-    const clean = role === 'user' ? text : scrub(text);
-    if (clean) d.appendChild(document.createTextNode(clean));
+    let clean = role === 'user' ? text : scrub(text);
+    clean = String(clean || '').replace(/\[{0,2}(?:ME)?(?:ME?DIA):\s*\(?([^\]\s\)]+)\)?\]{0,2}/gi,
+      (_, p) => '\n[[MEDIA:/media/' + encodeURIComponent(p.replace(/^.*\//, '')) + ']]\n');
+    const re = /\[\[MEDIA:([^\]]+)\]\]/g;
+    let last = 0, m;
+    while (clean && (m = re.exec(clean))) {
+      if (m.index > last) d.appendChild(document.createTextNode(clean.slice(last, m.index)));
+      const im = document.createElement('img');
+      im.className = 'att emoji';
+      im.src = m[1];
+      d.appendChild(im);
+      last = m.index + m[0].length;
+    }
+    if (clean && last < clean.length) d.appendChild(document.createTextNode(clean.slice(last)));
+    else if (clean && last === 0) d.appendChild(document.createTextNode(clean));
     (images || []).forEach((src) => {
       const im = document.createElement('img');
       im.className = 'att'; im.src = src;
@@ -324,6 +342,34 @@
     exprTimer = setTimeout(() => { try { model.expression(); } catch (e) {} }, 4200);
   }
 
+  async function loadHistory() {
+    try {
+      const r = await fetch('/api/session');
+      const d = await r.json();
+      sessionId = d.session_id || '';
+      msgs.innerHTML = '';
+      const list = d.messages || [];
+      if (!list.length) { addMsg('ai', '主人好呀～大肥鱼游过来啦。今天想聊点什么？'); return; }
+      list.forEach((m) => {
+        addMsg(m.role === 'user' ? 'user' : 'ai', m.content);
+        history.push({ role: m.role === 'user' ? 'user' : 'assistant', content: m.content });
+      });
+    } catch (e) {
+      addMsg('ai', '历史记录暂时读不出来，不过还是能聊天哦～');
+    }
+  }
+
+  document.getElementById('newchat').addEventListener('click', async () => {
+    const r = await fetch('/api/session/new', { method: 'POST' });
+    const d = await r.json();
+    if (d.session_id) {
+      sessionId = d.session_id;
+      history.length = 0;
+      msgs.innerHTML = '';
+      addMsg('ai', '新的对话开始啦，大肥鱼把前面的都忘光光咯～');
+    }
+  });
+
   async function send() {
     const text = input.value.trim();
     const imgs = pending.slice();
@@ -343,11 +389,10 @@
       const r = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ text, images: imgs, session_id: sessionId || null, history: history.slice(-12) }),
+        body: JSON.stringify({ text, images: imgs, history: history.slice(-12) }),
       });
       const data = await r.json();
       typing.remove();
-      if (data.session_id) { sessionId = data.session_id; localStorage.setItem('fish_sid', sessionId); }
       if (data.reply) {
         addMsg('ai', data.reply);
         history.push({ role: 'assistant', content: data.reply });
@@ -367,6 +412,8 @@
       input.focus();
     }
   }
+
+  loadHistory();
 
   sendBtn.addEventListener('click', send);
   input.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.isComposing) send(); });

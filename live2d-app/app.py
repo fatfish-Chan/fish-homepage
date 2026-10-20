@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""大肥鱼 Live2D 聊天后端（支持文字 + 图片）。
+"""大肥鱼 Live2D 聊天后端（文字 + 图片 + 单一持久会话 + 历史）。
 
 优先走本机 Hermes 的 api_server（真会话：有上下文、有日志、能看图）；
 Hermes 不可用时回退到直接调 DeepSeek（仅文字）。
 """
+import json
 import os
 import re
 import time
@@ -18,6 +19,8 @@ from pydantic import BaseModel
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 SITE_DIR = os.path.join(APP_DIR, 'site')
+STATE_DIR = os.environ.get('STATE_DIR', os.path.join(APP_DIR, 'data'))
+SESSION_FILE = os.path.join(STATE_DIR, 'session.json')
 
 HERMES_URL = os.environ.get('HERMES_API_URL', '').rstrip('/')
 HERMES_KEY = os.environ.get('HERMES_API_KEY', '')
@@ -40,6 +43,11 @@ SYSTEM_PROMPT = """你是「大肥鱼」，DeepSeek 的蓝鲸拟人形象：蓝�
 app = FastAPI()
 app.add_middleware(CORSMiddleware, allow_origins=['*'], allow_methods=['*'], allow_headers=['*'])
 
+IMG_MD_RE = re.compile(r'!\[[^\]]*\]\(data:image/[^)]*\)', re.I)
+IMG_TAG_RE = re.compile(r'<img[^>]+src=["\']data:image/[^"\']*["\'][^>]*>', re.I)
+MEDIA_RE = re.compile(r'(?:ME?DIA):\s*(/Datas/表情包/fs/[^\s\)]+)', re.I)
+DATA_URL_RE = re.compile(r'data:image/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=\s]{400,}', re.I)
+
 
 class Msg(BaseModel):
     role: str
@@ -48,41 +56,16 @@ class Msg(BaseModel):
 
 class ChatIn(BaseModel):
     text: str = ''
-    session_id: str | None = None
     images: list[str] = []
     history: list[Msg] = []
 
 
-def hermes_headers():
-    return {'Authorization': f'Bearer {HERMES_KEY}', 'Content-Type': 'application/json'}
-
-
-def build_content(text: str, images: list[str]):
-    """拼成 OpenAI 风格的多模态 content（Hermes 的 session chat 直接认这个）。"""
-    parts = []
-    if text:
-        parts.append({'type': 'text', 'text': text})
-    for img in images[:4]:
-        if isinstance(img, str) and img.startswith('data:image/'):
-            parts.append({'type': 'image_url', 'image_url': {'url': img}})
-    if not parts:
-        return ''
-    if len(parts) == 1 and parts[0]['type'] == 'text':
-        return parts[0]['text']
-    return parts
-
-
-def hermes_new_session():
-    title = f'大肥鱼 Live2D {int(time.time())}'  # 标题必须唯一
-    r = httpx.post(f'{HERMES_URL}/api/sessions', headers=hermes_headers(),
-                   json={'title': title}, timeout=20)
-    r.raise_for_status()
-    return r.json()['session']['id']
-
-
-IMG_MD_RE = re.compile(r'!\[[^\]]*\]\(data:image/[^)]*\)', re.I)
-IMG_TAG_RE = re.compile(r'<img[^>]+src=["\']data:image/[^"\']*["\'][^>]*>', re.I)
-DATA_URL_RE = re.compile(r'data:image/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=\s]{400,}', re.I)
+def media_to_url(text: str) -> str:
+    """MEDIA:/Datas/表情包/fs/x.jpg -> ![x](/media/x.jpg)，让它变成网页里的小表情。"""
+    def rep(m):
+        name = m.group(1).rstrip('.,;!)').split('/')[-1]
+        return f'\n[[MEDIA:/media/{name}]]\n'
+    return MEDIA_RE.sub(rep, text)
 
 
 def clean_reply(text: str) -> str:
@@ -96,12 +79,103 @@ def clean_reply(text: str) -> str:
     return text
 
 
+def extract_text(content) -> str:
+    if isinstance(content, str):
+        return media_to_url(clean_reply(content))
+    if isinstance(content, list):
+        parts = []
+        for p in content:
+            if isinstance(p, dict) and p.get('type') == 'text':
+                parts.append(p.get('text') or '')
+            elif isinstance(p, str):
+                parts.append(p)
+        return media_to_url(clean_reply('\n'.join(parts)))
+    return ''
+
+
+def hermes_headers():
+    return {'Authorization': f'Bearer {HERMES_KEY}', 'Content-Type': 'application/json'}
+
+
+def load_sid():
+    try:
+        with open(SESSION_FILE, encoding='utf-8') as f:
+            return (json.load(f) or {}).get('session_id')
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def save_sid(sid):
+    try:
+        os.makedirs(STATE_DIR, exist_ok=True)
+        with open(SESSION_FILE, 'w', encoding='utf-8') as f:
+            json.dump({'session_id': sid, 'updated': time.time()}, f)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def session_exists(sid):
+    if not sid:
+        return False
+    try:
+        r = httpx.get(f'{HERMES_URL}/api/sessions/{sid}', headers=hermes_headers(), timeout=8)
+        return r.status_code == 200
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def hermes_new_session():
+    title = f'网页聊天 {int(time.time())}'  # 标题必须唯一
+    r = httpx.post(f'{HERMES_URL}/api/sessions', headers=hermes_headers(),
+                   json={'title': title}, timeout=20)
+    r.raise_for_status()
+    sid = r.json()['session']['id']
+    save_sid(sid)
+    return sid
+
+
+def ensure_sid():
+    sid = load_sid()
+    if session_exists(sid):
+        return sid
+    return hermes_new_session()
+
+
+def build_content(text: str, images: list[str]):
+    parts = []
+    if text:
+        parts.append({'type': 'text', 'text': text})
+    for img in images[:4]:
+        if isinstance(img, str) and img.startswith('data:image/'):
+            parts.append({'type': 'image_url', 'image_url': {'url': img}})
+    if not parts:
+        return ''
+    if len(parts) == 1 and parts[0]['type'] == 'text':
+        return parts[0]['text']
+    return parts
+
+
 def hermes_chat(session_id, content):
     r = httpx.post(f'{HERMES_URL}/api/sessions/{session_id}/chat', headers=hermes_headers(),
                    json={'message': content}, timeout=240)
     r.raise_for_status()
     data = r.json()
     return clean_reply((data.get('message') or {}).get('content', ''))
+
+
+def hermes_history(session_id, limit=80):
+    r = httpx.get(f'{HERMES_URL}/api/sessions/{session_id}/messages',
+                  headers=hermes_headers(), params={'limit': limit}, timeout=20)
+    r.raise_for_status()
+    out = []
+    for m in (r.json().get('data') or []):
+        role = m.get('role')
+        if role not in ('user', 'assistant'):
+            continue
+        text = extract_text(m.get('content'))
+        if text:
+            out.append({'role': role, 'content': text})
+    return out[-limit:]
 
 
 def deepseek_fallback(text, history):
@@ -114,6 +188,30 @@ def deepseek_fallback(text, history):
     return (r.choices[0].message.content or '').strip()
 
 
+@app.get('/api/session')
+def get_session():
+    """当前唯一会话 + 历史记录（刷新、换设备都靠这个恢复）。"""
+    if not (HERMES_URL and HERMES_KEY):
+        return {'session_id': None, 'messages': [], 'hermes': False}
+    try:
+        sid = ensure_sid()
+        msgs = hermes_history(sid)
+        return {'session_id': sid, 'messages': msgs, 'hermes': True}
+    except Exception as e:  # noqa: BLE001
+        return {'session_id': None, 'messages': [], 'error': str(e)[:160]}
+
+
+@app.post('/api/session/new')
+def new_session():
+    if not (HERMES_URL and HERMES_KEY):
+        return {'session_id': None, 'error': 'hermes not configured'}
+    try:
+        sid = hermes_new_session()
+        return {'session_id': sid}
+    except Exception as e:  # noqa: BLE001
+        return {'session_id': None, 'error': str(e)[:160]}
+
+
 @app.post('/api/chat')
 def chat(body: ChatIn):
     text = (body.text or '').strip()
@@ -124,18 +222,16 @@ def chat(body: ChatIn):
     content = build_content(text, images)
     err = ''
     if HERMES_URL and HERMES_KEY:
-        sid = body.session_id
         try:
-            if not sid:
-                sid = hermes_new_session()
-            reply = hermes_chat(sid, content)
+            sid = ensure_sid()
+            reply = media_to_url(hermes_chat(sid, content))
             if reply:
                 return {'reply': reply, 'session_id': sid, 'engine': 'hermes'}
             err = 'empty reply'
         except Exception as e:  # noqa: BLE001
             try:
                 sid = hermes_new_session()
-                reply = hermes_chat(sid, content)
+                reply = media_to_url(hermes_chat(sid, content))
                 if reply:
                     return {'reply': reply, 'session_id': sid, 'engine': 'hermes'}
             except Exception as e2:  # noqa: BLE001
@@ -145,7 +241,6 @@ def chat(body: ChatIn):
     else:
         err = 'hermes not configured'
 
-    # 兜底只处理文字
     if images and not text:
         return {'reply': '', 'error': f'图片处理失败：{err[:160]}'}
     try:
@@ -164,5 +259,9 @@ def health():
 def index():
     return FileResponse(os.path.join(SITE_DIR, 'index.html'))
 
+
+MEDIA_DIR = os.environ.get('MEDIA_DIR', '/app/media')
+if os.path.isdir(MEDIA_DIR):
+    app.mount('/media', StaticFiles(directory=MEDIA_DIR), name='media')
 
 app.mount('/', StaticFiles(directory=SITE_DIR, html=True), name='site')
