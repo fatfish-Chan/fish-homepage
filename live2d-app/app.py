@@ -116,6 +116,16 @@ def extract_text(content) -> str:
     return ''
 
 
+def require_key(request: Request):
+    """端点内二次校验：没钥匙直接 401，绝不让任何回复漏出去。"""
+    if not WEB_KEY:
+        return None
+    k = request.headers.get('x-web-key') or request.cookies.get('webkey') or ''
+    if not hmac.compare_digest(k, WEB_KEY):
+        return JSONResponse({'error': 'unauthorized'}, status_code=401)
+    return None
+
+
 def hermes_headers():
     return {'Authorization': f'Bearer {HERMES_KEY}', 'Content-Type': 'application/json'}
 
@@ -215,7 +225,10 @@ def deepseek_fallback(text, history):
 
 
 @app.get('/api/session')
-def get_session():
+def get_session(request: Request):
+    denied = require_key(request)
+    if denied:
+        return denied
     """当前唯一会话 + 历史记录（刷新、换设备都靠这个恢复）。"""
     if not (HERMES_URL and HERMES_KEY):
         return {'session_id': None, 'messages': [], 'hermes': False}
@@ -228,7 +241,10 @@ def get_session():
 
 
 @app.post('/api/session/new')
-def new_session():
+def new_session(request: Request):
+    denied = require_key(request)
+    if denied:
+        return denied
     if not (HERMES_URL and HERMES_KEY):
         return {'session_id': None, 'error': 'hermes not configured'}
     try:
@@ -239,7 +255,10 @@ def new_session():
 
 
 @app.post('/api/chat')
-def chat(body: ChatIn):
+def chat(body: ChatIn, request: Request):
+    denied = require_key(request)
+    if denied:
+        return denied
     text = (body.text or '').strip()
     images = [i for i in (body.images or []) if isinstance(i, str) and i.startswith('data:image/')]
     if not text and not images:
@@ -276,14 +295,25 @@ def chat(body: ChatIn):
         return {'reply': '', 'error': f'{err[:120]} | fallback: {e}'[:240]}
 
 
+LOGIN_FAILS = {}
+
+
 @app.post('/api/login')
 def login(body: KeyIn, request: Request):
     if not WEB_KEY:
         return {'ok': True}
+    ip = (request.client.host if request.client else 'local') or 'local'
+    now = time.time()
+    fails = [t for t in LOGIN_FAILS.get(ip, []) if now - t < 300]
+    if len(fails) >= 5:
+        return JSONResponse({'error': '试太多次啦，五分钟后再来'}, status_code=429)
     if hmac.compare_digest((body.key or '').strip(), WEB_KEY):
+        LOGIN_FAILS.pop(ip, None)
         resp = JSONResponse({'ok': True})
         resp.set_cookie('webkey', WEB_KEY, max_age=86400 * 30, httponly=True, samesite='lax')
         return resp
+    fails.append(now)
+    LOGIN_FAILS[ip] = fails
     return JSONResponse({'error': '密钥不对哦'}, status_code=401)
 
 
