@@ -78,6 +78,13 @@
   @media (max-width:420px){
     .stage{flex-basis:44%}
   }
+  .preview{display:none;gap:8px;padding:8px 14px;flex-wrap:wrap;border-top:1px solid rgba(200,236,255,.1);background:rgba(8,16,28,.3)}
+  .preview.show{display:flex}
+  .preview .thumb{position:relative;width:62px;height:62px;border-radius:10px;overflow:hidden;border:1px solid rgba(200,236,255,.3)}
+  .preview .thumb img{width:100%;height:100%;object-fit:cover;display:block}
+  .preview .thumb span{position:absolute;right:2px;top:2px;width:18px;height:18px;line-height:16px;text-align:center;
+    border-radius:50%;background:rgba(0,0,0,.55);color:#fff;font-size:12px;cursor:pointer}
+  .msg img.att{margin-top:6px;max-width:100%;border-radius:10px;display:block}
   .hint{position:fixed;left:50%;top:10px;transform:translateX(-50%);font-size:12px;color:#8fb6d1;
     background:rgba(6,13,24,.6);padding:6px 14px;border-radius:20px;border:1px solid rgba(200,236,255,.15);
     opacity:0;transition:opacity .3s;pointer-events:none;z-index:9}
@@ -100,9 +107,12 @@
   <div class="msgs" id="msgs">
     <div class="msg ai">主人好呀～大肥鱼游过来啦。今天想聊点什么？</div>
   </div>
+  <div class="preview" id="preview"></div>
   <div class="input-bar">
     <button class="icon-btn" id="mute" title="语音开关">🔊</button>
-    <input id="text" placeholder="和大肥鱼说点什么…" autocomplete="off" maxlength="300">
+    <button class="icon-btn" id="attach" title="发张图">📎</button>
+    <input type="file" id="file" accept="image/*" multiple hidden>
+    <input id="text" placeholder="和大肥鱼说点什么…（可粘贴图片）" autocomplete="off" maxlength="300">
     <button id="send">发送</button>
   </div>
 </div>
@@ -218,11 +228,79 @@
   const statusEl = document.getElementById('status');
   const history = [];
   let sessionId = localStorage.getItem('fish_sid') || '';
+  const pending = [];   // 待发送的图片 dataURL
 
-  function addMsg(role, text) {
+  const previewEl = document.getElementById('preview');
+  const fileInput = document.getElementById('file');
+
+  function renderPreview() {
+    previewEl.innerHTML = '';
+    pending.forEach((src, i) => {
+      const d = document.createElement('div');
+      d.className = 'thumb';
+      d.innerHTML = '<img src="' + src + '"><span data-i="' + i + '">×</span>';
+      d.querySelector('span').onclick = () => { pending.splice(i, 1); renderPreview(); };
+      previewEl.appendChild(d);
+    });
+    previewEl.classList.toggle('show', pending.length > 0);
+  }
+
+  function shrink(fileOrBlob) {
+    return new Promise((resolve) => {
+      const fr = new FileReader();
+      fr.onload = () => {
+        const img = new Image();
+        img.onload = () => {
+          const max = 1280;
+          let { width: w, height: h } = img;
+          if (Math.max(w, h) > max) { const r = max / Math.max(w, h); w = Math.round(w * r); h = Math.round(h * r); }
+          const c = document.createElement('canvas');
+          c.width = w; c.height = h;
+          c.getContext('2d').drawImage(img, 0, 0, w, h);
+          resolve(c.toDataURL('image/jpeg', 0.86));
+        };
+        img.src = fr.result;
+      };
+      fr.readAsDataURL(fileOrBlob);
+    });
+  }
+
+  async function addFiles(list) {
+    for (const f of list) {
+      if (!f.type.startsWith('image/')) continue;
+      if (pending.length >= 4) { toast('一次最多四张哦'); break; }
+      pending.push(await shrink(f));
+    }
+    renderPreview();
+  }
+
+  document.getElementById('attach').addEventListener('click', () => fileInput.click());
+  fileInput.addEventListener('change', (e) => { addFiles(e.target.files); fileInput.value = ''; });
+  document.addEventListener('paste', (e) => {
+    const items = (e.clipboardData || {}).items || [];
+    const imgs = [];
+    for (const it of items) if (it.type && it.type.startsWith('image/')) imgs.push(it.getAsFile());
+    if (imgs.length) { e.preventDefault(); addFiles(imgs); }
+  });
+
+  function scrub(t) {
+    return String(t || '')
+      .replace(/!\[[^\]]*\]\(data:image\/[^)]*\)/gi, '')
+      .replace(/<img[^>]+src=["']data:image\/[^"']*["'][^>]*>/gi, '')
+      .replace(/data:image\/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=\s]{300,}/gi, '')
+      .replace(/\n{3,}/g, '\n\n').trim();
+  }
+
+  function addMsg(role, text, images) {
     const d = document.createElement('div');
     d.className = 'msg ' + (role === 'user' ? 'me' : 'ai');
-    d.textContent = text;
+    const clean = role === 'user' ? text : scrub(text);
+    if (clean) d.appendChild(document.createTextNode(clean));
+    (images || []).forEach((src) => {
+      const im = document.createElement('img');
+      im.className = 'att'; im.src = src;
+      d.appendChild(im);
+    });
     msgs.appendChild(d);
     msgs.scrollTop = msgs.scrollHeight;
     return d;
@@ -248,10 +326,13 @@
 
   async function send() {
     const text = input.value.trim();
-    if (!text) return;
+    const imgs = pending.slice();
+    if (!text && !imgs.length) return;
     input.value = '';
-    addMsg('user', text);
-    history.push({ role: 'user', content: text });
+    pending.length = 0;
+    renderPreview();
+    addMsg('user', text, imgs);
+    history.push({ role: 'user', content: text || '[图片]' });
 
     sendBtn.disabled = true;
     statusEl.textContent = '正在想…';
@@ -262,7 +343,7 @@
       const r = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ text, session_id: sessionId || null, history: history.slice(-12) }),
+        body: JSON.stringify({ text, images: imgs, session_id: sessionId || null, history: history.slice(-12) }),
       });
       const data = await r.json();
       typing.remove();

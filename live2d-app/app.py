@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""大肥鱼 Live2D 聊天后端。
+"""大肥鱼 Live2D 聊天后端（支持文字 + 图片）。
 
-优先走本机 Hermes 的 api_server（真会话：有上下文、有日志）；
-Hermes 不可用时回退到直接调 DeepSeek（仅临时兜底）。
+优先走本机 Hermes 的 api_server（真会话：有上下文、有日志、能看图）；
+Hermes 不可用时回退到直接调 DeepSeek（仅文字）。
 """
 import os
+import re
 import time
 
 import httpx
@@ -46,8 +47,9 @@ class Msg(BaseModel):
 
 
 class ChatIn(BaseModel):
-    text: str
+    text: str = ''
     session_id: str | None = None
+    images: list[str] = []
     history: list[Msg] = []
 
 
@@ -55,21 +57,51 @@ def hermes_headers():
     return {'Authorization': f'Bearer {HERMES_KEY}', 'Content-Type': 'application/json'}
 
 
-def hermes_new_session(title=None):
-    # 标题必须唯一，Hermes 会拒绝重名
-    title = title or f'大肥鱼 Live2D {int(time.time())}'
+def build_content(text: str, images: list[str]):
+    """拼成 OpenAI 风格的多模态 content（Hermes 的 session chat 直接认这个）。"""
+    parts = []
+    if text:
+        parts.append({'type': 'text', 'text': text})
+    for img in images[:4]:
+        if isinstance(img, str) and img.startswith('data:image/'):
+            parts.append({'type': 'image_url', 'image_url': {'url': img}})
+    if not parts:
+        return ''
+    if len(parts) == 1 and parts[0]['type'] == 'text':
+        return parts[0]['text']
+    return parts
+
+
+def hermes_new_session():
+    title = f'大肥鱼 Live2D {int(time.time())}'  # 标题必须唯一
     r = httpx.post(f'{HERMES_URL}/api/sessions', headers=hermes_headers(),
                    json={'title': title}, timeout=20)
     r.raise_for_status()
     return r.json()['session']['id']
 
 
-def hermes_chat(session_id, text):
+IMG_MD_RE = re.compile(r'!\[[^\]]*\]\(data:image/[^)]*\)', re.I)
+IMG_TAG_RE = re.compile(r'<img[^>]+src=["\']data:image/[^"\']*["\'][^>]*>', re.I)
+DATA_URL_RE = re.compile(r'data:image/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=\s]{400,}', re.I)
+
+
+def clean_reply(text: str) -> str:
+    """Hermes 有时会把用户图片以 markdown/base64 回显在回复里，这里剥掉。"""
+    if not text:
+        return ''
+    text = IMG_MD_RE.sub('', text)
+    text = IMG_TAG_RE.sub('', text)
+    text = DATA_URL_RE.sub('', text)
+    text = re.sub(r'\n{3,}', '\n\n', text).strip()
+    return text
+
+
+def hermes_chat(session_id, content):
     r = httpx.post(f'{HERMES_URL}/api/sessions/{session_id}/chat', headers=hermes_headers(),
-                   json={'message': text}, timeout=180)
+                   json={'message': content}, timeout=240)
     r.raise_for_status()
     data = r.json()
-    return (data.get('message') or {}).get('content', '')
+    return clean_reply((data.get('message') or {}).get('content', ''))
 
 
 def deepseek_fallback(text, history):
@@ -85,24 +117,25 @@ def deepseek_fallback(text, history):
 @app.post('/api/chat')
 def chat(body: ChatIn):
     text = (body.text or '').strip()
-    if not text:
+    images = [i for i in (body.images or []) if isinstance(i, str) and i.startswith('data:image/')]
+    if not text and not images:
         return {'reply': '', 'error': 'empty'}
 
+    content = build_content(text, images)
     err = ''
-    # 1) 有 Hermes 就走真会话（有上下文、有日志）
     if HERMES_URL and HERMES_KEY:
         sid = body.session_id
         try:
             if not sid:
                 sid = hermes_new_session()
-            reply = hermes_chat(sid, text)
+            reply = hermes_chat(sid, content)
             if reply:
                 return {'reply': reply, 'session_id': sid, 'engine': 'hermes'}
             err = 'empty reply'
         except Exception as e:  # noqa: BLE001
             try:
                 sid = hermes_new_session()
-                reply = hermes_chat(sid, text)
+                reply = hermes_chat(sid, content)
                 if reply:
                     return {'reply': reply, 'session_id': sid, 'engine': 'hermes'}
             except Exception as e2:  # noqa: BLE001
@@ -112,7 +145,9 @@ def chat(body: ChatIn):
     else:
         err = 'hermes not configured'
 
-    # 2) 兜底：直接问 DeepSeek
+    # 兜底只处理文字
+    if images and not text:
+        return {'reply': '', 'error': f'图片处理失败：{err[:160]}'}
     try:
         reply = deepseek_fallback(text, body.history)
         return {'reply': reply, 'engine': 'deepseek', 'warning': err[:160]}
