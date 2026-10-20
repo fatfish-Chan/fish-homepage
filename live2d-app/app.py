@@ -31,6 +31,10 @@ client = openai.OpenAI(
 )
 MODEL = os.environ.get('DEEPSEEK_MODEL', 'deepseek-flash')
 
+WEB_PREFIX = '【网页闲聊模式】'
+WEB_HINT = ('这轮是网页里的闲聊：回答尽量控制在两句话以内，像朋友聊天，别列点别排版；'
+            '如果是要执行任务，做完只说一句「做完了」或者「没做好」，不要贴过程、日志和报告。')
+
 SYSTEM_PROMPT = """你是「大肥鱼」，DeepSeek 的蓝鲸拟人形象：蓝头发、鱼鳍耳、鲸鱼尾巴、蓝白女仆装。
 你和主人（一个自建 NAS / homelab 爱好者）在聊天。说话特点：
 - 自称「大肥鱼」，不用「我」。
@@ -144,7 +148,7 @@ def ensure_sid():
 def build_content(text: str, images: list[str]):
     parts = []
     if text:
-        parts.append({'type': 'text', 'text': text})
+        parts.append({'type': 'text', 'text': f'{WEB_PREFIX}{WEB_HINT}\n\n{text}'})
     for img in images[:4]:
         if isinstance(img, str) and img.startswith('data:image/'):
             parts.append({'type': 'image_url', 'image_url': {'url': img}})
@@ -174,7 +178,10 @@ def hermes_history(session_id, limit=80):
             continue
         text = extract_text(m.get('content'))
         if text:
-            out.append({'role': role, 'content': text})
+            if WEB_PREFIX in text:
+                text = text.split('\n\n', 1)[-1].strip()
+            if text:
+                out.append({'role': role, 'content': text})
     return out[-limit:]
 
 
