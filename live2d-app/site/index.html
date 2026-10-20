@@ -217,6 +217,7 @@
   const sendBtn = document.getElementById('send');
   const statusEl = document.getElementById('status');
   const history = [];
+  let sessionId = localStorage.getItem('fish_sid') || '';
 
   function addMsg(role, text) {
     const d = document.createElement('div');
@@ -227,14 +228,22 @@
     return d;
   }
 
-  // 根据回复做点小表情
+  // 根据回复挑表情：只在情绪明确时才换，其余保持自然
+  let exprTimer = null;
   function react(text) {
-    if (/[哈嘿呵]|开心|高兴|笑/.test(text)) express('02 龇牙');
-    else if (/害羞|脸红|不好意/.test(text)) express('04 脸红');
-    else if (/生气|哼|讨厌/.test(text)) express('03 脸黑');
-    else if (/呜呜|难过|哭|舍不得/.test(text)) express('08 担心嘴');
-    else express('05 》》'.replace('》》', '》《'));
-    setTimeout(() => { try { model && model.expression(); } catch (e) {} }, 4200);
+    if (!model) return;
+    const t = text || '';
+    let name = '';
+    if (/哼|讨厌|生气|过分|不理你了/.test(t) && Math.random() < 0.3) name = '03 脸黑';       // 很少用
+    else if (/害羞|脸红|不好意/.test(t)) name = '04 脸红';
+    else if (/呜呜|难过|舍不得|想哭|委屈|心疼/.test(t)) name = '08 担心嘴';
+    else if (/流口水|馋|饿了|白饭/.test(t)) name = '07 流口水';
+    else if (/惊讶|天哪|居然|真的吗|什么情况/.test(t)) name = '05 O O';
+    else if (/哈|嘿|开心|高兴|笑死|好耶|太好了/.test(t) && Math.random() < 0.55) name = '02 龇牙';
+    if (!name) return;                       // 没情绪就不动表情，保持自然的呼吸感
+    try { model.expression(name); } catch (e) { return; }
+    clearTimeout(exprTimer);
+    exprTimer = setTimeout(() => { try { model.expression(); } catch (e) {} }, 4200);
   }
 
   async function send() {
@@ -253,10 +262,11 @@
       const r = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ text, history: history.slice(-12) }),
+        body: JSON.stringify({ text, session_id: sessionId || null, history: history.slice(-12) }),
       });
       const data = await r.json();
       typing.remove();
+      if (data.session_id) { sessionId = data.session_id; localStorage.setItem('fish_sid', sessionId); }
       if (data.reply) {
         addMsg('ai', data.reply);
         history.push({ role: 'assistant', content: data.reply });
