@@ -228,8 +228,10 @@
   pickVoice();
   if ('speechSynthesis' in window) speechSynthesis.onvoiceschanged = pickVoice;
 
-  function speak(raw) {
-    // 朗读前剥掉路径/base64/链接，只念人话
+  let currentAudio = null;
+
+  async function speak(raw) {
+    // 朗读前剥掉路径/base64/链接/颜文字，只念人话
     const text = String(raw || '')
       .replace(/\[\[MEDIA:[^\]]+\]\]/g, '')
       .replace(/(?:ME?DIA):\S+/gi, '')
@@ -238,11 +240,36 @@
       .replace(/[（(][^（）()]{0,30}[）)]/g, '')
       .replace(/[【\[][^【】\[\]]{0,30}[】\]]/g, '')
       .replace(/[~〜]+/g, '')
-      // 只留中文、英文、数字和常用标点，颜文字残骸全部清掉
       .replace(/[^\u4e00-\u9fa5\u3000-\u303f0-9a-zA-Z，。！？、；：”‘’《》…—,.!?~\s]/g, '')
       .replace(/\s+/g, ' ').trim();
     if (!text) { lipSync(400); return; }
-    if (!ttsOn || !('speechSynthesis' in window)) { lipSync(Math.min(2200, text.length * 90)); return; }
+    if (!ttsOn) { lipSync(Math.min(2200, text.length * 90)); return; }
+
+    // 1) 优先用 Fish Audio（大肥鱼自己的声音）
+    try {
+      const r = await apiFetch('/api/tts', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ text }),
+      });
+      if (r.ok) {
+        const blob = await r.blob();
+        const url = URL.createObjectURL(blob);
+        if (currentAudio) { try { currentAudio.pause(); } catch (e) {} }
+        const audio = new Audio(url);
+        currentAudio = audio;
+        audio.onloadedmetadata = () => {
+          const secs = audio.duration || text.length * 0.22;
+          lipSync(Math.max(800, Math.min(20000, secs * 1000)));
+        };
+        audio.onended = () => { URL.revokeObjectURL(url); lipSync(120); };
+        await audio.play();
+        return;
+      }
+    } catch (e) { /* 落到浏览器 TTS */ }
+
+    // 2) 兜底：浏览器自带中文声音
+    if (!('speechSynthesis' in window)) { lipSync(Math.min(2200, text.length * 90)); return; }
     try {
       speechSynthesis.cancel();
       const u = new SpeechSynthesisUtterance(text);

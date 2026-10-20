@@ -14,7 +14,7 @@ import httpx
 import openai
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -31,6 +31,13 @@ client = openai.OpenAI(
     base_url=os.environ.get('DEEPSEEK_BASE_URL', 'https://api.deepseek.com'),
 )
 MODEL = os.environ.get('DEEPSEEK_MODEL', 'deepseek-flash')
+
+# Fish Audio 语音
+FISH_KEY = os.environ.get('FISH_API_KEY', '').strip()
+FISH_VOICE = os.environ.get('FISH_VOICE_ID', '').strip()
+FISH_MODEL = os.environ.get('FISH_MODEL', 's2.1-pro-free').strip()
+FISH_TEMP = float(os.environ.get('FISH_TEMP', '0.85') or 0.85)
+FISH_SPEED = float(os.environ.get('FISH_SPEED', '1.08') or 1.08)
 
 WEB_PREFIX = '【网页闲聊模式】'
 WEB_HINT = ('这轮是网页里的闲聊：回答尽量控制在两句话以内，像朋友聊天，别列点别排版；'
@@ -75,6 +82,10 @@ class Msg(BaseModel):
 
 class KeyIn(BaseModel):
     key: str = ''
+
+
+class TtsIn(BaseModel):
+    text: str = ''
 
 
 class ChatIn(BaseModel):
@@ -315,6 +326,32 @@ def login(body: KeyIn, request: Request):
     fails.append(now)
     LOGIN_FAILS[ip] = fails
     return JSONResponse({'error': '密钥不对哦'}, status_code=401)
+
+
+@app.post('/api/tts')
+def tts(body: TtsIn, request: Request):
+    denied = require_key(request)
+    if denied:
+        return denied
+    text = (body.text or '').strip()[:600]
+    if not text:
+        return JSONResponse({'error': 'empty'}, status_code=400)
+    if not (FISH_KEY and FISH_VOICE):
+        return JSONResponse({'error': 'tts not configured'}, status_code=503)
+    try:
+        r = httpx.post('https://api.fish.audio/v1/tts',
+                       headers={'Authorization': f'Bearer {FISH_KEY}',
+                                'Content-Type': 'application/json',
+                                'model': FISH_MODEL},
+                       json={'text': text, 'reference_id': FISH_VOICE, 'format': 'mp3',
+                             'mp3_bitrate': 128, 'temperature': FISH_TEMP,
+                             'prosody': {'speed': FISH_SPEED}},
+                       timeout=60)
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse({'error': f'fish timeout: {e}'[:160]}, status_code=504)
+    if r.status_code != 200:
+        return JSONResponse({'error': f'fish {r.status_code}'}, status_code=502)
+    return Response(content=r.content, media_type='audio/mpeg')
 
 
 @app.get('/api/health')
