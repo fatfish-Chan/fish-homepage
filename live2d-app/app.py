@@ -65,7 +65,10 @@ async def web_key_guard(request: Request, call_next):
         key = request.headers.get('x-web-key') or request.cookies.get('webkey') or ''
         if not hmac.compare_digest(key, WEB_KEY):
             return JSONResponse({'error': 'unauthorized'}, status_code=401)
-    return await call_next(request)
+    response = await call_next(request)
+    if path == '/' or path.endswith('.html'):
+        response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
+    return response
 
 app.add_middleware(CORSMiddleware, allow_origins=['*'], allow_methods=['*'], allow_headers=['*'])
 
@@ -361,7 +364,9 @@ def health():
 
 @app.get('/')
 def index():
-    return FileResponse(os.path.join(SITE_DIR, 'index.html'))
+    # 页面本身绝不缓存，避免浏览器拿着旧 JS 打新接口（会被 401 拦掉）
+    return FileResponse(os.path.join(SITE_DIR, 'index.html'),
+                        headers={'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0'})
 
 
 MEDIA_DIR = os.environ.get('MEDIA_DIR', '/app/media')
