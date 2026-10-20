@@ -207,7 +207,15 @@
   pickVoice();
   if ('speechSynthesis' in window) speechSynthesis.onvoiceschanged = pickVoice;
 
-  function speak(text) {
+  function speak(raw) {
+    // 朗读前剥掉路径/base64/链接，只念人话
+    const text = String(raw || '')
+      .replace(/\[\[MEDIA:[^\]]+\]\]/g, '')
+      .replace(/(?:ME?DIA):\S+/gi, '')
+      .replace(/data:image\/[^\s)]+/gi, '')
+      .replace(/https?:\/\/\S+/g, '')
+      .replace(/\s+/g, ' ').trim();
+    if (!text) { lipSync(400); return; }
     if (!ttsOn || !('speechSynthesis' in window)) { lipSync(Math.min(2200, text.length * 90)); return; }
     try {
       speechSynthesis.cancel();
