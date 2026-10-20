@@ -89,6 +89,18 @@
   .newbtn{border:1px solid rgba(200,236,255,.35);background:rgba(200,236,255,.12);color:#dff3ff;
     font-size:12px;padding:4px 10px;border-radius:999px;cursor:pointer;margin-left:8px;font-family:inherit}
   .newbtn:hover{background:rgba(200,236,255,.24)}
+  .gate{position:fixed;inset:0;z-index:99;display:none;align-items:center;justify-content:center;
+    background:rgba(4,10,18,.82);backdrop-filter:blur(10px)}
+  .gate.show{display:flex}
+  .gatebox{width:min(320px,86vw);padding:26px 22px;border-radius:20px;text-align:center;
+    background:rgba(200,236,255,.1);border:1px solid rgba(200,236,255,.28);
+    box-shadow:0 18px 50px rgba(0,0,0,.45);color:#eaf7ff;font-family:inherit}
+  .gatebox .gtitle{font-size:17px;font-weight:600;margin-bottom:16px;letter-spacing:.04em}
+  .gatebox input{width:100%;box-sizing:border-box;padding:11px 14px;border-radius:12px;font-size:14px;
+    border:1px solid rgba(200,236,255,.3);background:rgba(255,255,255,.1);color:#eaf7ff;outline:none;font-family:inherit}
+  .gatebox button{margin-top:12px;width:100%;padding:11px;border:none;border-radius:12px;cursor:pointer;
+    font-size:14px;font-family:inherit;background:#8fd3ff;color:#06202f;font-weight:600}
+  .gerr{min-height:18px;margin-top:8px;font-size:12px;color:#ffb4b4}
   .hint{position:fixed;left:50%;top:10px;transform:translateX(-50%);font-size:12px;color:#8fb6d1;
     background:rgba(6,13,24,.6);padding:6px 14px;border-radius:20px;border:1px solid rgba(200,236,255,.15);
     opacity:0;transition:opacity .3s;pointer-events:none;z-index:9}
@@ -101,6 +113,15 @@
 <script src="live2d/pixi-live2d.min.js"></script>
 </head>
 <body>
+<div class="gate show" id="gate">
+  <div class="gatebox">
+    <div class="gtitle">🐳 大肥鱼 · 私人房间</div>
+    <input id="gkey" type="password" placeholder="访问密钥" autocomplete="off">
+    <button id="gbtn">进入</button>
+    <div class="gerr" id="gerr"></div>
+  </div>
+</div>
+
 <div class="stage" id="stage"></div>
 <div class="stage-glow"></div>
 
@@ -244,6 +265,43 @@
   const input = document.getElementById('text');
   const sendBtn = document.getElementById('send');
   const statusEl = document.getElementById('status');
+  const KEY_STORE = 'fish_web_key';
+  const gateEl = document.getElementById('gate');
+
+  function apiFetch(url, opts) {
+    opts = opts || {};
+    opts.headers = Object.assign({}, opts.headers || {}, {
+      'X-Web-Key': localStorage.getItem(KEY_STORE) || '',
+    });
+    return fetch(url, opts).then((r) => {
+      if (r.status === 401) { gateEl.classList.add('show'); throw new Error('unauthorized'); }
+      return r;
+    });
+  }
+
+  function enterGate() {
+    const k = document.getElementById('gkey').value.trim();
+    if (!k) return;
+    fetch('/api/login', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      credentials: 'same-origin',
+      body: JSON.stringify({ key: k }),
+    }).then(async (r) => {
+      if (r.ok) {
+        localStorage.setItem(KEY_STORE, k);
+        gateEl.classList.remove('show');
+        document.getElementById('gerr').textContent = '';
+        loadHistory();
+      } else {
+        const d = await r.json().catch(() => ({}));
+        document.getElementById('gerr').textContent = d.error || '进不去呢';
+      }
+    }).catch(() => { document.getElementById('gerr').textContent = '连不上后端'; });
+  }
+
+  document.getElementById('gbtn').addEventListener('click', enterGate);
+  document.getElementById('gkey').addEventListener('keydown', (e) => { if (e.key === 'Enter') enterGate(); });
   const history = [];
   let sessionId = '';
   const pending = [];   // 待发送的图片 dataURL
@@ -357,7 +415,7 @@
 
   async function loadHistory() {
     try {
-      const r = await fetch('/api/session');
+      const r = await apiFetch('/api/session');
       const d = await r.json();
       sessionId = d.session_id || '';
       msgs.innerHTML = '';
@@ -373,7 +431,7 @@
   }
 
   document.getElementById('newchat').addEventListener('click', async () => {
-    const r = await fetch('/api/session/new', { method: 'POST' });
+    const r = await apiFetch('/api/session/new', { method: 'POST' });
     const d = await r.json();
     if (d.session_id) {
       sessionId = d.session_id;
@@ -399,7 +457,7 @@
     typing.classList.add('typing');
 
     try {
-      const r = await fetch('/api/chat', {
+      const r = await apiFetch('/api/chat', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ text, images: imgs, history: history.slice(-12) }),
@@ -426,7 +484,12 @@
     }
   }
 
-  loadHistory();
+  if (localStorage.getItem(KEY_STORE)) {
+    gateEl.classList.remove('show');
+    loadHistory();
+  } else {
+    loadHistory();  // 没 key 会被 401 拦下，自动弹遮罩
+  }
 
   sendBtn.addEventListener('click', send);
   input.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.isComposing) send(); });

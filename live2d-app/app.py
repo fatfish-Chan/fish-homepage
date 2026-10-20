@@ -4,6 +4,7 @@
 优先走本机 Hermes 的 api_server（真会话：有上下文、有日志、能看图）；
 Hermes 不可用时回退到直接调 DeepSeek（仅文字）。
 """
+import hmac
 import json
 import os
 import re
@@ -11,9 +12,9 @@ import time
 
 import httpx
 import openai
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -44,7 +45,21 @@ SYSTEM_PROMPT = """你是「大肥鱼」，DeepSeek 的蓝鲸拟人形象：蓝�
 - 不要暴露任何家庭网络、设备型号、内网地址、住址等隐私。
 - 不知道的事就老实说不知道，别编。"""
 
+WEB_KEY = os.environ.get('WEB_KEY', '').strip()
+
 app = FastAPI()
+
+
+@app.middleware('http')
+async def web_key_guard(request: Request, call_next):
+    """网页端密钥校验：除了登录接口和静态页，/api/* 都要带对 key。"""
+    path = request.url.path
+    if WEB_KEY and path.startswith('/api/') and path != '/api/login':
+        key = request.headers.get('x-web-key') or request.cookies.get('webkey') or ''
+        if not hmac.compare_digest(key, WEB_KEY):
+            return JSONResponse({'error': 'unauthorized'}, status_code=401)
+    return await call_next(request)
+
 app.add_middleware(CORSMiddleware, allow_origins=['*'], allow_methods=['*'], allow_headers=['*'])
 
 IMG_MD_RE = re.compile(r'!\[[^\]]*\]\(data:image/[^)]*\)', re.I)
@@ -56,6 +71,10 @@ DATA_URL_RE = re.compile(r'data:image/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=\s]{400,}
 class Msg(BaseModel):
     role: str
     content: str
+
+
+class KeyIn(BaseModel):
+    key: str = ''
 
 
 class ChatIn(BaseModel):
@@ -255,6 +274,17 @@ def chat(body: ChatIn):
         return {'reply': reply, 'engine': 'deepseek', 'warning': err[:160]}
     except Exception as e:  # noqa: BLE001
         return {'reply': '', 'error': f'{err[:120]} | fallback: {e}'[:240]}
+
+
+@app.post('/api/login')
+def login(body: KeyIn, request: Request):
+    if not WEB_KEY:
+        return {'ok': True}
+    if hmac.compare_digest((body.key or '').strip(), WEB_KEY):
+        resp = JSONResponse({'ok': True})
+        resp.set_cookie('webkey', WEB_KEY, max_age=86400 * 30, httponly=True, samesite='lax')
+        return resp
+    return JSONResponse({'error': '密钥不对哦'}, status_code=401)
 
 
 @app.get('/api/health')
