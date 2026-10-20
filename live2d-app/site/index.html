@@ -214,6 +214,11 @@
       .replace(/(?:ME?DIA):\S+/gi, '')
       .replace(/data:image\/[^\s)]+/gi, '')
       .replace(/https?:\/\/\S+/g, '')
+      .replace(/[（(][^（）()]{0,30}[）)]/g, '')
+      .replace(/[【\[][^【】\[\]]{0,30}[】\]]/g, '')
+      .replace(/[~〜]+/g, '')
+      // 只留中文、英文、数字和常用标点，颜文字残骸全部清掉
+      .replace(/[^\u4e00-\u9fa5\u3000-\u303f0-9a-zA-Z，。！？、；：”‘’《》…—,.!?~\s]/g, '')
       .replace(/\s+/g, ' ').trim();
     if (!text) { lipSync(400); return; }
     if (!ttsOn || !('speechSynthesis' in window)) { lipSync(Math.min(2200, text.length * 90)); return; }
